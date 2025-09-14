@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebRTC Sender</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header><b>WebRTC Sender</b> <span class="small">— share a window in one click</span></header>
+  <main>
+    <div class="card">
+      <div class="row">
+        <label class="small">WS URL
+          <input id="wsUrl" type="text" value="wss://ws.elecard-signal.com" />
+        </label>
+        <label class="small">Room
+          <input id="room" type="text" value="posdnya" style="width:120px" />
+        </label>
+        <button id="btnConnect">Connect</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+        <span id="wsStatus" class="small badge">WS: Disconnected</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button id="btnShare">Share a window…</button>
+        <label class="small"><input id="withAudio" type="checkbox"> include system audio</label>
+        <span id="shareInfo" class="small"></span>
+      </div>
+      <video id="localVideo" playsinline muted></video>
+      <div class="sep"></div>
+      <div class="row small">
+        <span id="sigState"></span>
+        <span id="iceState"></span>
+        <span id="connState"></span>
+        <span id="pathState" class="badge"></span>
+      </div>
+      <pre id="log" class="small"></pre>
+    </div>
+  </main>
+
+<script>
+'use strict';
+const wsUrlEl = document.getElementById('wsUrl');
+const roomEl = document.getElementById('room');
+const btnConnect = document.getElementById('btnConnect');
+const btnDisconnect = document.getElementById('btnDisconnect');
+const wsStatus = document.getElementById('wsStatus');
+let ws = null;
+let room = roomEl.value.trim();
+
+function setWSStatus() {
+  const ok = ws && ws.readyState === WebSocket.OPEN;
+  wsStatus.textContent = 'WS: ' + (ok ? 'Connected' : 'Disconnected');
+  btnConnect.disabled = ok;
+  btnDisconnect.disabled = !ok;
+}
+
+roomEl.addEventListener('input', ()=> room = roomEl.value.trim());
+
+btnConnect.addEventListener('click', () => {
+  room = roomEl.value.trim();
+  const url = wsUrlEl.value.trim();
+  if (!url || !room) { alert('Fill WS URL and Room'); return; }
+  if (ws) try { ws.close(); } catch {}
+  ws = new WebSocket(url);
+  ws.addEventListener('open', () => { setWSStatus(); try{ ws.send(JSON.stringify({type:'join', room})); }catch(e){} });
+  ws.addEventListener('close', setWSStatus);
+  ws.addEventListener('error', setWSStatus);
+  ws.addEventListener('message', ev => { try { handleSignal(JSON.parse(ev.data)); } catch {} });
+  setWSStatus();
+});
+
+btnDisconnect.addEventListener('click', ()=>{ try { ws.close(); } catch {}; setWSStatus(); });
+
+function toPlainCandidate(c){ return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment }; }
+function sendSig(obj){
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room}));
+}
+
+let pc = new RTCPeerConnection({ iceServers: [{urls:'stun:stun.l.google.com:19302'}] });
+const localVideo = document.getElementById('localVideo');
+const shareInfo = document.getElementById('shareInfo');
+const withAudio = document.getElementById('withAudio');
+const btnShare = document.getElementById('btnShare');
+const sigState = document.getElementById('sigState');
+const iceState = document.getElementById('iceState');
+const connState = document.getElementById('connState');
+const pathState = document.getElementById('pathState');
+const log = document.getElementById('log');
+
+function logln(s){ log.textContent += s + "\n"; }
+
+pc.addEventListener('signalingstatechange', ()=> sigState.textContent = 'signaling: ' + pc.signalingState);
+pc.addEventListener('iceconnectionstatechange', ()=> iceState.textContent = 'ice: ' + pc.iceConnectionState);
+pc.addEventListener('connectionstatechange', ()=> connState.textContent = 'conn: ' + pc.connectionState);
+pc.addEventListener('icecandidate', e => {
+  if (e.candidate) sendSig({kind:'candidate', from:'sender', candidate: toPlainCandidate(e.candidate)});
+  else sendSig({kind:'end-of-candidates', from:'sender'});
+});
+
+async function updatePath(){
+  try {
+    const stats = await pc.getStats();
+    let pair, local, remote;
+    stats.forEach(r=>{ if (r.type==='candidate-pair' && r.selected) pair=r; if (r.type==='transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId) || pair; });
+    if (pair){ local = stats.get(pair.localCandidateId); remote = stats.get(pair.remoteCandidateId); }
+    if (local && remote) pathState.textContent = `path: ${local.candidateType}→${remote.candidateType}${pair.state==='succeeded'?' ✓':''}`;
+  } catch {}
+}
+setInterval(updatePath, 2000);
+
+async function startShare() {
+  try {
+    if (!isSecureContext) { alert('Use https or http://localhost'); return; }
+    const constraints = { video: { displaySurface:'window' }, audio: withAudio.checked ? { systemAudio:'include' } : false };
+    const stream = await navigator.mediaDevices.getDisplayMedia(constraints).catch(async e => {
+      return await navigator.mediaDevices.getDisplayMedia({ video:true, audio: withAudio.checked });
+    });
+    localVideo.srcObject = stream;
+    for (const t of stream.getTracks()) pc.addTrack(t, stream);
+    shareInfo.textContent = 'Capture started ✓ — creating offer…';
+    // auto createOffer
+    const offer = await pc.createOffer({ offerToReceiveVideo:true, offerToReceiveAudio:true });
+    await pc.setLocalDescription(offer);
+    sendSig({ kind:'offer', sdp: pc.localDescription });
+    logln('offer sent');
+  } catch (e) {
+    shareInfo.textContent = 'Capture failed: ' + (e.message || e);
+  }
+}
+
+btnShare.addEventListener('click', startShare);
+
+async function handleSignal(msg){
+  if (!msg || msg.room !== room) return;
+  if (msg.kind === 'answer' && msg.sdp) {
+    try { await pc.setRemoteDescription(msg.sdp); logln('answer set ✓'); } catch(e){ logln('setRemoteDescription error: '+e.message); }
+    return;
+  }
+  if (msg.kind === 'candidate' && msg.from === 'viewer' && msg.candidate){
+    try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch(e){}
+    return;
+  }
+}
+</script>
+</body>
+</html>

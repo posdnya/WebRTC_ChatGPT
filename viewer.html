@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebRTC Viewer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header><b>WebRTC Viewer</b> <span class="small">— watch the shared window</span></header>
+  <main>
+    <div class="card">
+      <div class="row">
+        <label class="small">WS URL
+          <input id="wsUrl" type="text" value="wss://ws.elecard-signal.com" />
+        </label>
+        <label class="small">Room
+          <input id="room" type="text" value="posdnya" style="width:120px" />
+        </label>
+        <button id="btnConnect">Connect</button>
+        <button id="btnDisconnect" disabled>Disconnect</button>
+        <span id="wsStatus" class="small badge">WS: Disconnected</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <video id="remoteVideo" playsinline autoplay muted></video>
+      <div class="sep"></div>
+      <div class="row small">
+        <span id="sigState"></span>
+        <span id="iceState"></span>
+        <span id="connState"></span>
+      </div>
+      <pre id="log" class="small"></pre>
+    </div>
+  </main>
+
+<script>
+'use strict';
+const wsUrlEl = document.getElementById('wsUrl');
+const roomEl = document.getElementById('room');
+const btnConnect = document.getElementById('btnConnect');
+const btnDisconnect = document.getElementById('btnDisconnect');
+const wsStatus = document.getElementById('wsStatus');
+let ws = null;
+let room = roomEl.value.trim();
+
+function setWSStatus() {
+  const ok = ws && ws.readyState === WebSocket.OPEN;
+  wsStatus.textContent = 'WS: ' + (ok ? 'Connected' : 'Disconnected');
+  btnConnect.disabled = ok;
+  btnDisconnect.disabled = !ok;
+}
+roomEl.addEventListener('input', ()=> room = roomEl.value.trim());
+
+btnConnect.addEventListener('click', () => {
+  room = roomEl.value.trim();
+  const url = wsUrlEl.value.trim();
+  if (!url || !room) { alert('Fill WS URL and Room'); return; }
+  if (ws) try { ws.close(); } catch {}
+  ws = new WebSocket(url);
+  ws.addEventListener('open', () => { setWSStatus(); try{ ws.send(JSON.stringify({type:'join', room})); }catch(e){} });
+  ws.addEventListener('close', setWSStatus);
+  ws.addEventListener('error', setWSStatus);
+  ws.addEventListener('message', ev => { try { handleSignal(JSON.parse(ev.data)); } catch {} });
+  setWSStatus();
+});
+
+btnDisconnect.addEventListener('click', ()=>{ try { ws.close(); } catch {}; setWSStatus(); });
+
+function toPlainCandidate(c){ return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment }; }
+function sendSig(obj){
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room}));
+}
+
+let pc = new RTCPeerConnection({ iceServers: [{urls:'stun:stun.l.google.com:19302'}] });
+const remoteVideo = document.getElementById('remoteVideo');
+const sigState = document.getElementById('sigState');
+const iceState = document.getElementById('iceState');
+const connState = document.getElementById('connState');
+const log = document.getElementById('log');
+function logln(s){ log.textContent += s + "\n"; }
+
+pc.addEventListener('signalingstatechange', ()=> sigState.textContent = 'signaling: ' + pc.signalingState);
+pc.addEventListener('iceconnectionstatechange', ()=> iceState.textContent = 'ice: ' + pc.iceConnectionState);
+pc.addEventListener('connectionstatechange', ()=> connState.textContent = 'conn: ' + pc.connectionState);
+pc.addEventListener('track', e => { if (e.streams && e.streams[0]) remoteVideo.srcObject = e.streams[0]; });
+pc.addEventListener('icecandidate', e => {
+  if (e.candidate) sendSig({kind:'candidate', from:'viewer', candidate: toPlainCandidate(e.candidate)});
+  else sendSig({kind:'end-of-candidates', from:'viewer'});
+});
+
+async function handleSignal(msg){
+  if (!msg || msg.room !== room) return;
+  if (msg.kind === 'offer' && msg.sdp) {
+    try {
+      await pc.setRemoteDescription(msg.sdp);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSig({ kind:'answer', sdp: pc.localDescription });
+      logln('answer sent');
+    } catch(e){ logln('error: ' + (e.message||e)); }
+    return;
+  }
+  if (msg.kind === 'candidate' && msg.from === 'sender' && msg.candidate){
+    try { await pc.addIceCandidate(new RTCiceCandidate(msg.candidate)); } catch(e){}
+    return;
+  }
+}
+</script>
+</body>
+</html>
