@@ -103,7 +103,7 @@ async function handleSignal(msg){
     return;
   }
   if (msg.kind === 'candidate' && msg.from === 'sender' && msg.candidate){
-    try { await pc.addIceCandidate(new RTCiceCandidate(msg.candidate)); } catch(e){}
+    try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch(e){}
     return;
   }
 }
