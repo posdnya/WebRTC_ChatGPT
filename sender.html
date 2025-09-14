@@ -5,6 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>WebRTC Sender</title>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    .dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px;background:#888}
+    .dot.live{background:#e33}
+    .timer{margin-left:8px;opacity:.8}
+    select{padding:8px 10px;border:1px solid #8883;border-radius:10px}
+  </style>
 </head>
 <body>
   <header><b>WebRTC Sender</b> <span class="small">— share a window in one click</span></header>
@@ -17,10 +23,13 @@
         <label class="small">Room
           <input id="room" type="text" value="posdnya" style="width:120px" />
         </label>
+        <label class="small">PIN
+          <input id="pin" type="text" value="1234" style="width:100px" />
+        </label>
         <button id="btnConnect">Connect</button>
         <button id="btnDisconnect" disabled>Disconnect</button>
         <span id="wsStatus" class="small badge">WS: Disconnected</span>
-        <span id="shareBadge" class="small badge idle" title="Screen share status">Sharing: Off</span>
+        <button id="btnCopyLink" class="small">Copy viewer link</button>
       </div>
       <details class="small" style="margin-top:8px;"><summary>TURN (optional)</summary>
         <div class="row">
@@ -37,6 +46,21 @@
         <button id="btnShare">Share a window…</button>
         <button id="btnStop" disabled>Stop</button>
         <label class="small"><input id="withAudio" type="checkbox"> include system audio</label>
+
+        <label class="small">Quality
+          <select id="quality">
+            <option value="1280x720@30|2500000">720p@30 • 2.5 Mbps</option>
+            <option value="1920x1080@30|4000000" selected>1080p@30 • 4 Mbps</option>
+            <option value="1920x1080@60|6000000">1080p@60 • 6 Mbps</option>
+            <option value="2560x1440@30|8000000">1440p@30 • 8 Mbps</option>
+            <option value="3840x2160@30|15000000">4K@30 • 15 Mbps</option>
+          </select>
+          <button id="applyQual" class="small">Apply</button>
+        </label>
+
+        <span id="shareBadge" class="small badge idle" title="Screen share status">
+          <span id="liveDot" class="dot"></span>LIVE <span id="liveTimer" class="timer">00:00</span>
+        </span>
         <span id="shareInfo" class="small"></span>
       </div>
       <video id="localVideo" playsinline muted></video>
@@ -53,13 +77,22 @@
 
 <script>
 'use strict';
+// --- URL params -> defaults
+const urlParams = new URLSearchParams(location.search);
 const wsUrlEl = document.getElementById('wsUrl');
 const roomEl = document.getElementById('room');
+const pinEl  = document.getElementById('pin');
+wsUrlEl.value = urlParams.get('ws')   || wsUrlEl.value;
+roomEl.value  = urlParams.get('room') || roomEl.value;
+pinEl.value   = urlParams.get('pin')  || pinEl.value;
+
 const btnConnect = document.getElementById('btnConnect');
 const btnDisconnect = document.getElementById('btnDisconnect');
 const wsStatus = document.getElementById('wsStatus');
+const btnCopyLink = document.getElementById('btnCopyLink');
 let ws = null;
 let room = roomEl.value.trim();
+let pin  = pinEl.value.trim();
 
 function setWSStatus() {
   const ok = ws && ws.readyState === WebSocket.OPEN;
@@ -67,27 +100,37 @@ function setWSStatus() {
   btnConnect.disabled = ok;
   btnDisconnect.disabled = !ok;
 }
-
 roomEl.addEventListener('input', ()=> room = roomEl.value.trim());
+pinEl.addEventListener('input',  ()=> pin  = pinEl.value.trim());
 
-btnConnect.addEventListener('click', () => {
+btnCopyLink.addEventListener('click', async ()=>{
+  const u = new URL(location.href);
+  u.pathname = u.pathname.replace(/sender\.html$/,'viewer.html');
+  u.searchParams.set('room', room);
+  if (pin) u.searchParams.set('pin', pin);
+  await navigator.clipboard.writeText(u.toString());
+  wsStatus.textContent = 'WS: link copied';
+});
+
+function connectWS(){
   room = roomEl.value.trim();
+  pin  = pinEl.value.trim();
   const url = wsUrlEl.value.trim();
   if (!url || !room) { alert('Fill WS URL and Room'); return; }
   if (ws) try { ws.close(); } catch {}
   ws = new WebSocket(url);
-  ws.addEventListener('open', () => { setWSStatus(); try{ ws.send(JSON.stringify({type:'join', room})); }catch(e){} });
+  ws.addEventListener('open', () => { setWSStatus(); try{ ws.send(JSON.stringify({type:'join', room, pin})); }catch(e){} });
   ws.addEventListener('close', setWSStatus);
   ws.addEventListener('error', setWSStatus);
   ws.addEventListener('message', ev => { try { handleSignal(JSON.parse(ev.data)); } catch {} });
   setWSStatus();
-});
-
+}
+btnConnect.addEventListener('click', connectWS);
 btnDisconnect.addEventListener('click', ()=>{ try { ws.close(); } catch {}; setWSStatus(); });
 
 function toPlainCandidate(c){ return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment }; }
 function sendSig(obj){
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room}));
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room, pin}));
 }
 
 let pc = null;
@@ -97,6 +140,11 @@ const withAudio = document.getElementById('withAudio');
 const btnShare = document.getElementById('btnShare');
 const btnStop = document.getElementById('btnStop');
 const shareBadge = document.getElementById('shareBadge');
+const liveDot = document.getElementById('liveDot');
+const liveTimerEl = document.getElementById('liveTimer');
+const qualitySel = document.getElementById('quality');
+const applyQual = document.getElementById('applyQual');
+
 const sigState = document.getElementById('sigState');
 const iceState = document.getElementById('iceState');
 const connState = document.getElementById('connState');
@@ -104,7 +152,11 @@ const pathState = document.getElementById('pathState');
 const log = document.getElementById('log');
 
 function logln(s){ log.textContent += s + "\n"; }
-function setShareBadge(on){ shareBadge.textContent = on? 'Sharing: On' : 'Sharing: Off'; shareBadge.classList.toggle('live', !!on); shareBadge.classList.toggle('idle', !on); }
+function setShareBadge(on){
+  shareBadge.classList.toggle('live', !!on);
+  shareBadge.classList.toggle('idle', !on);
+  liveDot.classList.toggle('live', !!on);
+}
 
 function getIceServers(){
   const servers = [{urls:'stun:stun.l.google.com:19302'}];
@@ -118,8 +170,14 @@ function ensurePC(){
   if (pc) return pc;
   pc = new RTCPeerConnection({ iceServers: getIceServers() });
   pc.addEventListener('signalingstatechange', ()=> sigState.textContent = 'signaling: ' + pc.signalingState);
-  pc.addEventListener('iceconnectionstatechange', ()=> iceState.textContent = 'ice: ' + pc.iceConnectionState);
-  pc.addEventListener('connectionstatechange', ()=> connState.textContent = 'conn: ' + pc.connectionState);
+  pc.addEventListener('iceconnectionstatechange', ()=> {
+    iceState.textContent = 'ice: ' + pc.iceConnectionState;
+    updateLive();
+  });
+  pc.addEventListener('connectionstatechange', ()=> {
+    connState.textContent = 'conn: ' + pc.connectionState;
+    updateLive();
+  });
   pc.addEventListener('icecandidate', e => {
     if (e.candidate) sendSig({kind:'candidate', from:'sender', candidate: toPlainCandidate(e.candidate)});
     else sendSig({kind:'end-of-candidates', from:'sender'});
@@ -140,6 +198,29 @@ async function updatePath(){
 setInterval(updatePath, 2000);
 
 let currentStream = null;
+let videoSender = null;
+let liveTimer = null;
+let liveStart = 0;
+
+function updateLive(){
+  const on = currentStream && pc && pc.connectionState === 'connected';
+  setShareBadge(on);
+  if (on){
+    if (!liveTimer){
+      liveStart = Date.now();
+      liveTimer = setInterval(()=>{
+        const s = Math.floor((Date.now()-liveStart)/1000);
+        const mm = String(Math.floor(s/60)).padStart(2,'0');
+        const ss = String(s%60).padStart(2,'0');
+        liveTimerEl.textContent = `${mm}:${ss}`;
+      },1000);
+    }
+  } else {
+    clearInterval(liveTimer); liveTimer=null;
+    liveTimerEl.textContent = '00:00';
+  }
+}
+
 async function startShare() {
   try {
     if (!isSecureContext) { alert('Use https or http://localhost'); return; }
@@ -152,8 +233,17 @@ async function startShare() {
     setShareBadge(true);
     btnStop.disabled = false;
     stream.getVideoTracks().forEach(t=> t.addEventListener('ended', ()=>{ try{ btnStop.click(); }catch(e){} }));
+
     const pc2 = ensurePC();
-    for (const t of stream.getTracks()) pc2.addTrack(t, stream);
+    videoSender = null;
+    for (const t of stream.getTracks()){
+      const s = pc2.addTrack(t, stream);
+      if (t.kind==='video') videoSender = s;
+    }
+
+    // apply initial preset fps/bitrate
+    await applyQuality();
+
     shareInfo.textContent = 'Capture started ✓ — creating offer…';
     const offer = await pc2.createOffer({ offerToReceiveVideo:true, offerToReceiveAudio:true });
     await pc2.setLocalDescription(offer);
@@ -171,13 +261,34 @@ btnStop.addEventListener('click', ()=>{
     setShareBadge(false);
     btnStop.disabled = true;
     shareInfo.textContent = 'Sharing stopped';
+    updateLive();
   }catch(e){}
 });
 
+async function applyQuality(){
+  if (!currentStream || !videoSender) return;
+  const [whf, br] = qualitySel.value.split('|');
+  const [, fps] = whf.split('@');
+  const maxBitrate = Number(br);
+  try{
+    const track = currentStream.getVideoTracks()[0];
+    await track.applyConstraints({ frameRate: Number(fps) });
+    const p = videoSender.getParameters();
+    if (!p.encodings) p.encodings = [{}];
+    p.encodings[0].maxBitrate = maxBitrate; // bps
+    await videoSender.setParameters(p);
+    track.contentHint = 'motion';
+    shareInfo.textContent = `Preset applied: ${whf}, ${Math.round(maxBitrate/1000)} kbps`;
+  }catch(e){ shareInfo.textContent = 'Quality apply failed: ' + e.message; }
+}
+applyQual.addEventListener('click', applyQuality);
+
 async function handleSignal(msg){
   if (!msg || msg.room !== room) return;
+  if (msg.pin !== undefined && msg.pin !== pin) return; // PIN mismatch → игнор
+
   if (msg.kind === 'answer' && msg.sdp) {
-    try { await ensurePC().setRemoteDescription(msg.sdp); logln('answer set ✓'); } catch(e){ logln('setRemoteDescription error: '+e.message); }
+    try { await ensurePC().setRemoteDescription(msg.sdp); logln('answer set ✓'); updateLive(); } catch(e){ logln('setRemoteDescription error: '+e.message); }
     return;
   }
   if (msg.kind === 'end-of-candidates'){ try{ ensurePC().addIceCandidate(null); }catch(e){} return; }
@@ -186,6 +297,9 @@ async function handleSignal(msg){
     return;
   }
 }
+
+// Autoconnect on load
+window.addEventListener('DOMContentLoaded', connectWS);
 </script>
 </body>
 </html>

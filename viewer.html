@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>WebRTC Viewer</title>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    .kv{display:inline-flex;gap:6px;align-items:center}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+  </style>
 </head>
 <body>
   <header><b>WebRTC Viewer</b> <span class="small">— watch the shared window</span></header>
@@ -17,9 +21,14 @@
         <label class="small">Room
           <input id="room" type="text" value="posdnya" style="width:120px" />
         </label>
+        <label class="small">PIN
+          <input id="pin" type="text" value="1234" style="width:100px" />
+        </label>
         <button id="btnConnect">Connect</button>
         <button id="btnDisconnect" disabled>Disconnect</button>
         <span id="wsStatus" class="small badge">WS: Disconnected</span>
+        <span class="badge" id="rttBadge">RTT: —</span>
+        <span class="badge" id="brBadge">Bitrate: —</span>
       </div>
       <details class="small" style="margin-top:8px;"><summary>TURN (optional)</summary>
         <div class="row">
@@ -52,13 +61,23 @@
 
 <script>
 'use strict';
+// URL params → defaults
+const urlParams = new URLSearchParams(location.search);
 const wsUrlEl = document.getElementById('wsUrl');
 const roomEl = document.getElementById('room');
+const pinEl  = document.getElementById('pin');
+wsUrlEl.value = urlParams.get('ws')   || wsUrlEl.value;
+roomEl.value  = urlParams.get('room') || roomEl.value;
+pinEl.value   = urlParams.get('pin')  || pinEl.value;
+
 const btnConnect = document.getElementById('btnConnect');
 const btnDisconnect = document.getElementById('btnDisconnect');
 const wsStatus = document.getElementById('wsStatus');
+const rttBadge = document.getElementById('rttBadge');
+const brBadge  = document.getElementById('brBadge');
 let ws = null;
 let room = roomEl.value.trim();
+let pin  = pinEl.value.trim();
 
 function setWSStatus() {
   const ok = ws && ws.readyState === WebSocket.OPEN;
@@ -67,25 +86,34 @@ function setWSStatus() {
   btnDisconnect.disabled = !ok;
 }
 roomEl.addEventListener('input', ()=> room = roomEl.value.trim());
+pinEl.addEventListener('input',  ()=> pin  = pinEl.value.trim());
 
-btnConnect.addEventListener('click', () => {
+function connectWS(){
   room = roomEl.value.trim();
+  pin  = pinEl.value.trim();
   const url = wsUrlEl.value.trim();
   if (!url || !room) { alert('Fill WS URL and Room'); return; }
   if (ws) try { ws.close(); } catch {}
   ws = new WebSocket(url);
-  ws.addEventListener('open', () => { setWSStatus(); try{ ws.send(JSON.stringify({type:'join', room})); }catch(e){} });
+  ws.addEventListener('open', () => {
+    setWSStatus();
+    try{
+      ws.send(JSON.stringify({type:'join', room, pin}));
+      // просим оффер (на случай если sender уже в комнате)
+      ws.send(JSON.stringify({type:'need-offer', room, pin}));
+    }catch(e){}
+  });
   ws.addEventListener('close', setWSStatus);
   ws.addEventListener('error', setWSStatus);
   ws.addEventListener('message', ev => { try { handleSignal(JSON.parse(ev.data)); } catch {} });
   setWSStatus();
-});
-
+}
+btnConnect.addEventListener('click', connectWS);
 btnDisconnect.addEventListener('click', ()=>{ try { ws.close(); } catch {}; setWSStatus(); });
 
 function toPlainCandidate(c){ return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment }; }
 function sendSig(obj){
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room}));
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room, pin}));
 }
 
 let pc = null;
@@ -121,6 +149,8 @@ function ensurePC(){
 
 async function handleSignal(msg){
   if (!msg || msg.room !== room) return;
+  if (msg.pin !== undefined && msg.pin !== pin) return; // PIN mismatch → игнор
+
   if (msg.kind === 'offer' && msg.sdp) {
     try {
       const pc2 = ensurePC();
@@ -129,6 +159,7 @@ async function handleSignal(msg){
       await pc2.setLocalDescription(answer);
       sendSig({ kind:'answer', sdp: pc2.localDescription });
       logln('answer sent');
+      startStats();
     } catch(e){ logln('error: ' + (e.message||e)); }
     return;
   }
@@ -138,6 +169,38 @@ async function handleSignal(msg){
     return;
   }
 }
+
+// Telemetry: RTT + inbound bitrate
+let statsTimer=null, prevBytes=0, prevTs=0;
+function humanBps(bps){
+  if (bps<1e3) return bps.toFixed(0)+' bps';
+  if (bps<1e6) return (bps/1e3).toFixed(1)+' kbps';
+  if (bps<1e9) return (bps/1e6).toFixed(1)+' Mbps';
+  return (bps/1e9).toFixed(1)+' Gbps';
+}
+function startStats(){
+  stopStats();
+  prevBytes=0; prevTs=0;
+  statsTimer = setInterval(async ()=>{
+    if (!pc) return;
+    try {
+      const stats = await pc.getStats();
+      let bytes=0, rtt=null, now=performance.now();
+      stats.forEach(r=>{
+        if (r.type==='inbound-rtp' && r.kind==='video') bytes += r.bytesReceived||0;
+        if (r.type==='candidate-pair' && r.state==='succeeded' && r.selected) rtt = r.currentRoundTripTime ?? rtt;
+        if (!rtt && r.type==='transport') rtt = r.roundTripTime ?? rtt;
+      });
+      if (prevTs && bytes>=prevBytes){
+        const bps = (bytes-prevBytes)*8*1000/(now-prevTs);
+        brBadge.textContent = 'Bitrate: ' + humanBps(bps);
+      }
+      if (typeof rtt==='number') rttBadge.textContent = 'RTT: ' + (rtt*1000).toFixed(0) + ' ms';
+      prevBytes=bytes; prevTs=now;
+    } catch {}
+  }, 1000);
+}
+function stopStats(){ if (statsTimer){ clearInterval(statsTimer); statsTimer=null; brBadge.textContent='Bitrate: —'; rttBadge.textContent='RTT: —'; } }
 
 // Local overlay clock
 (function(){
@@ -152,25 +215,15 @@ async function handleSignal(msg){
   tick();
 })();
 
-// Show path hint
-async function updatePath(){
-  try {
-    const pc2 = ensurePC();
-    const stats = await pc2.getStats();
-    let pair, local, remote;
-    stats.forEach(r=>{ if (r.type==='candidate-pair' && r.selected) pair=r; if (r.type==='transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId) || pair; });
-    if (pair){ local = stats.get(pair.localCandidateId); remote = stats.get(pair.remoteCandidateId); }
-    if (local && remote) connState.textContent = 'conn: ' + pc2.connectionState + ' — path ' + local.candidateType + '→' + remote.candidateType;
-  } catch {}
-}
-setInterval(updatePath, 2000);
-
 // Iframe hint
 (function(){
   const iframe = document.getElementById('clockZoneFrame');
   if (!iframe) return;
   iframe.addEventListener('load', ()=>{ iframe.title = 'Embedded from clock.zone; if blank, site may block embedding. Overlay clock above always works.'; });
 })();
+
+// Autoconnect on load
+window.addEventListener('DOMContentLoaded', connectWS);
 </script>
 </body>
 </html>
