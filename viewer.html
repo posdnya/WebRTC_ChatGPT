@@ -24,7 +24,7 @@
     </div>
 
     <div class="card">
-      <video id="remoteVideo" playsinline autoplay muted></video>
+      <div class="player-wrap"><video id="remoteVideo" playsinline autoplay muted></video><div id="clockOverlay" class="clock-overlay" title="Local time">--:--:--</div></div><div class="iframe-wrap"><iframe id="clockZoneFrame" title="Clock from clock.zone" src="https://clock.zone/" loading="lazy" referrerpolicy="no-referrer"></iframe></div>
       <div class="sep"></div>
       <div class="row small">
         <span id="sigState"></span>
@@ -107,6 +107,34 @@ async function handleSignal(msg){
     return;
   }
 }
+
+// === Local overlay clock (always works) ===
+(function(){
+  const el = document.getElementById('clockOverlay');
+  function fmt(n){ return (n<10?'0':'')+n; }
+  function tick(){
+    const d = new Date();
+    const s = `${fmt(d.getHours())}:${fmt(d.getMinutes())}:${fmt(d.getSeconds())}`;
+    if (el) el.textContent = s;
+    requestAnimationFrame(tick);
+  }
+  tick();
+})();
+
+// Try to hint user if clock.zone iframe fails to render (some sites block embedding)
+(function(){
+  const iframe = document.getElementById('clockZoneFrame');
+  if (!iframe) return;
+  let shown = false;
+  iframe.addEventListener('load', ()=>{
+    // We cannot inspect cross-origin content; just set a tooltip once loaded.
+    if (!shown) {
+      iframe.title = 'Embedded from clock.zone; if you see a blank area, the site may block embedding. The overlay clock above will always work.';
+      shown = true;
+    }
+  });
+})();
+
 </script>
 </body>
 </html>

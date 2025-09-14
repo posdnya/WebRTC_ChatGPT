@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <header><b>WebRTC Sender</b> <span class="small">— share a window in two clicks</span></header>
+  <header><b>WebRTC Sender</b> <span class="small">— share a window in one click</span></header>
   <main>
     <div class="card">
       <div class="row">
@@ -19,13 +19,13 @@
         </label>
         <button id="btnConnect">Connect</button>
         <button id="btnDisconnect" disabled>Disconnect</button>
-        <span id="wsStatus" class="small badge">WS: Disconnected</span>
+        <span id="wsStatus" class="small badge">WS: Disconnected</span><span id="shareBadge" class="small badge idle" title="Screen share status">Sharing: Off</span>
       </div>
     </div>
 
     <div class="card">
       <div class="row">
-        <button id="btnShare">Share a window…</button>
+        <button id="btnShare">Share a window…</button><button id="btnStop" disabled>Stop</button>
         <label class="small"><input id="withAudio" type="checkbox"> include system audio</label>
         <span id="shareInfo" class="small"></span>
       </div>
@@ -90,6 +90,10 @@ const iceState = document.getElementById('iceState');
 const connState = document.getElementById('connState');
 const pathState = document.getElementById('pathState');
 const log = document.getElementById('log');
+const btnStop = document.getElementById('btnStop');
+const shareBadge = document.getElementById('shareBadge');
+let currentStream = null;
+function setShareBadge(on){ shareBadge.textContent = on? 'Sharing: On' : 'Sharing: Off'; shareBadge.classList.toggle('live', !!on); shareBadge.classList.toggle('idle', !on); }
 
 function logln(s){ log.textContent += s + "\n"; }
 
@@ -120,6 +124,11 @@ async function startShare() {
       return await navigator.mediaDevices.getDisplayMedia({ video:true, audio: withAudio.checked });
     });
     localVideo.srcObject = stream;
+    currentStream = stream;
+    setShareBadge(true);
+    btnStop.disabled = false;
+    // if user stops sharing via browser UI, reflect it
+    stream.getVideoTracks().forEach(t=> t.addEventListener('ended', ()=>{ try{ btnStop.click(); }catch(e){} }));
     for (const t of stream.getTracks()) pc.addTrack(t, stream);
     shareInfo.textContent = 'Capture started ✓ — creating offer…';
     // auto createOffer
@@ -145,6 +154,20 @@ async function handleSignal(msg){
     return;
   }
 }
+
+btnStop.addEventListener('click', ()=>{
+  try{
+    if (currentStream){
+      currentStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} });
+      currentStream = null;
+    }
+    localVideo.srcObject = null;
+    setShareBadge(false);
+    btnStop.disabled = true;
+    shareInfo.textContent = 'Sharing stopped';
+  }catch(e){}
+});
+
 </script>
 </body>
 </html>
