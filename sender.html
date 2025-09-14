@@ -19,13 +19,23 @@
         </label>
         <button id="btnConnect">Connect</button>
         <button id="btnDisconnect" disabled>Disconnect</button>
-        <span id="wsStatus" class="small badge">WS: Disconnected</span><span id="shareBadge" class="small badge idle" title="Screen share status">Sharing: Off</span>
+        <span id="wsStatus" class="small badge">WS: Disconnected</span>
+        <span id="shareBadge" class="small badge idle" title="Screen share status">Sharing: Off</span>
       </div>
+      <details class="small" style="margin-top:8px;"><summary>TURN (optional)</summary>
+        <div class="row">
+          <label>turn URL <input id="turnUrl" type="text" placeholder="turn:host:3478 or turns:host:5349"></label>
+          <label>user <input id="turnUser" type="text" placeholder="username"></label>
+          <label>pass <input id="turnPass" type="text" placeholder="credential"></label>
+          <span class="small">Leave empty to prefer DIRECT path.</span>
+        </div>
+      </details>
     </div>
 
     <div class="card">
       <div class="row">
-        <button id="btnShare">Share a window…</button><button id="btnStop" disabled>Stop</button>
+        <button id="btnShare">Share a window…</button>
+        <button id="btnStop" disabled>Stop</button>
         <label class="small"><input id="withAudio" type="checkbox"> include system audio</label>
         <span id="shareInfo" class="small"></span>
       </div>
@@ -80,34 +90,47 @@ function sendSig(obj){
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({...obj, room}));
 }
 
-let pc = new RTCPeerConnection({ iceServers: [{urls:'stun:stun.l.google.com:19302'}] });
+let pc = null;
 const localVideo = document.getElementById('localVideo');
 const shareInfo = document.getElementById('shareInfo');
 const withAudio = document.getElementById('withAudio');
 const btnShare = document.getElementById('btnShare');
+const btnStop = document.getElementById('btnStop');
+const shareBadge = document.getElementById('shareBadge');
 const sigState = document.getElementById('sigState');
 const iceState = document.getElementById('iceState');
 const connState = document.getElementById('connState');
 const pathState = document.getElementById('pathState');
 const log = document.getElementById('log');
-const btnStop = document.getElementById('btnStop');
-const shareBadge = document.getElementById('shareBadge');
-let currentStream = null;
-function setShareBadge(on){ shareBadge.textContent = on? 'Sharing: On' : 'Sharing: Off'; shareBadge.classList.toggle('live', !!on); shareBadge.classList.toggle('idle', !on); }
 
 function logln(s){ log.textContent += s + "\n"; }
+function setShareBadge(on){ shareBadge.textContent = on? 'Sharing: On' : 'Sharing: Off'; shareBadge.classList.toggle('live', !!on); shareBadge.classList.toggle('idle', !on); }
 
-pc.addEventListener('signalingstatechange', ()=> sigState.textContent = 'signaling: ' + pc.signalingState);
-pc.addEventListener('iceconnectionstatechange', ()=> iceState.textContent = 'ice: ' + pc.iceConnectionState);
-pc.addEventListener('connectionstatechange', ()=> connState.textContent = 'conn: ' + pc.connectionState);
-pc.addEventListener('icecandidate', e => {
-  if (e.candidate) sendSig({kind:'candidate', from:'sender', candidate: toPlainCandidate(e.candidate)});
-  else sendSig({kind:'end-of-candidates', from:'sender'});
-});
+function getIceServers(){
+  const servers = [{urls:'stun:stun.l.google.com:19302'}];
+  const turn = document.getElementById('turnUrl')?.value.trim();
+  const u = document.getElementById('turnUser')?.value;
+  const p = document.getElementById('turnPass')?.value;
+  if (turn) servers.push({ urls: turn, username: u || undefined, credential: p || undefined });
+  return servers;
+}
+function ensurePC(){
+  if (pc) return pc;
+  pc = new RTCPeerConnection({ iceServers: getIceServers() });
+  pc.addEventListener('signalingstatechange', ()=> sigState.textContent = 'signaling: ' + pc.signalingState);
+  pc.addEventListener('iceconnectionstatechange', ()=> iceState.textContent = 'ice: ' + pc.iceConnectionState);
+  pc.addEventListener('connectionstatechange', ()=> connState.textContent = 'conn: ' + pc.connectionState);
+  pc.addEventListener('icecandidate', e => {
+    if (e.candidate) sendSig({kind:'candidate', from:'sender', candidate: toPlainCandidate(e.candidate)});
+    else sendSig({kind:'end-of-candidates', from:'sender'});
+  });
+  pc.addEventListener('icegatheringstatechange', ()=> { if (pc.iceGatheringState==='complete') logln('gathering complete'); });
+  return pc;
+}
 
 async function updatePath(){
   try {
-    const stats = await pc.getStats();
+    const stats = await ensurePC().getStats();
     let pair, local, remote;
     stats.forEach(r=>{ if (r.type==='candidate-pair' && r.selected) pair=r; if (r.type==='transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId) || pair; });
     if (pair){ local = stats.get(pair.localCandidateId); remote = stats.get(pair.remoteCandidateId); }
@@ -116,6 +139,7 @@ async function updatePath(){
 }
 setInterval(updatePath, 2000);
 
+let currentStream = null;
 async function startShare() {
   try {
     if (!isSecureContext) { alert('Use https or http://localhost'); return; }
@@ -127,40 +151,22 @@ async function startShare() {
     currentStream = stream;
     setShareBadge(true);
     btnStop.disabled = false;
-    // if user stops sharing via browser UI, reflect it
     stream.getVideoTracks().forEach(t=> t.addEventListener('ended', ()=>{ try{ btnStop.click(); }catch(e){} }));
-    for (const t of stream.getTracks()) pc.addTrack(t, stream);
+    const pc2 = ensurePC();
+    for (const t of stream.getTracks()) pc2.addTrack(t, stream);
     shareInfo.textContent = 'Capture started ✓ — creating offer…';
-    // auto createOffer
-    const offer = await pc.createOffer({ offerToReceiveVideo:true, offerToReceiveAudio:true });
-    await pc.setLocalDescription(offer);
-    sendSig({ kind:'offer', sdp: pc.localDescription });
+    const offer = await pc2.createOffer({ offerToReceiveVideo:true, offerToReceiveAudio:true });
+    await pc2.setLocalDescription(offer);
+    sendSig({ kind:'offer', sdp: pc2.localDescription });
     logln('offer sent');
   } catch (e) {
     shareInfo.textContent = 'Capture failed: ' + (e.message || e);
   }
 }
-
 btnShare.addEventListener('click', startShare);
-
-async function handleSignal(msg){
-  if (!msg || msg.room !== room) return;
-  if (msg.kind === 'answer' && msg.sdp) {
-    try { await pc.setRemoteDescription(msg.sdp); logln('answer set ✓'); } catch(e){ logln('setRemoteDescription error: '+e.message); }
-    return;
-  }
-  if (msg.kind === 'candidate' && msg.from === 'viewer' && msg.candidate){
-    try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch(e){}
-    return;
-  }
-}
-
 btnStop.addEventListener('click', ()=>{
   try{
-    if (currentStream){
-      currentStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} });
-      currentStream = null;
-    }
+    if (currentStream){ currentStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} }); currentStream=null; }
     localVideo.srcObject = null;
     setShareBadge(false);
     btnStop.disabled = true;
@@ -168,6 +174,18 @@ btnStop.addEventListener('click', ()=>{
   }catch(e){}
 });
 
+async function handleSignal(msg){
+  if (!msg || msg.room !== room) return;
+  if (msg.kind === 'answer' && msg.sdp) {
+    try { await ensurePC().setRemoteDescription(msg.sdp); logln('answer set ✓'); } catch(e){ logln('setRemoteDescription error: '+e.message); }
+    return;
+  }
+  if (msg.kind === 'end-of-candidates'){ try{ ensurePC().addIceCandidate(null); }catch(e){} return; }
+  if (msg.kind === 'candidate' && msg.from === 'viewer' && msg.candidate){
+    try { await ensurePC().addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch(e){ logln('addIceCandidate error: '+(e.message||e)); }
+    return;
+  }
+}
 </script>
 </body>
 </html>
