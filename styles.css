@@ -6,21 +6,27 @@ header { padding: 14px 18px; background:#111; color:#fff; }
 main { max-width: 960px; margin: 16px auto; padding: 0 12px; }
 .card { border: 1px solid #4443; border-radius: 12px; padding: 12px; margin-bottom: 16px; }
 .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-input[type=text] { padding:8px 10px; border:1px solid #8883; border-radius:10px; min-width:260px; }
+input[type=text] { padding:8px 10px; border:1px solid #8883; border-radius:10px; min-width:280px; }
 button { padding:8px 12px; border:1px solid #8883; border-radius:10px; cursor:pointer; }
 .small { font-size:12px; opacity:.85; }
 video { width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#0002; margin-left:8px; }
-.badge.live{ background: rgba(0,200,0,.18); color:#0a0; border:1px solid rgba(0,200,0,.3); }
-.badge.idle{ background: rgba(128,128,128,.18); color:#888; border:1px solid rgba(128,128,128,.3); }
+.ok { color: #0a0; } .warn { color:#b35c00; } .err { color:#b00020; }
 pre { background:#0001; padding:8px; border-radius:8px; font-size:12px; white-space:pre-wrap; }
 .sep { height:1px; background:#4443; margin:8px 0; }
-.player-wrap { position: relative; }
+
 .clock-overlay {
-  position: absolute; top: 10px; right: 10px; padding: 6px 10px;
-  border-radius: 10px; background: rgba(0,0,0,.45); color: #fff;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0,0,0,.45);
+  color: #fff;
   font: 600 20px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  letter-spacing: 0.5px; backdrop-filter: blur(4px);
+  letter-spacing: 0.5px;
+  backdrop-filter: blur(4px);
 }
+.player-wrap { position: relative; }
 .iframe-wrap { margin-top: 12px; border: 1px solid #4443; border-radius: 10px; overflow: hidden; }
 .iframe-wrap iframe { width: 100%; height: 300px; border: 0; }
